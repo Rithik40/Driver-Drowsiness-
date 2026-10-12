@@ -1,0 +1,127 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+\usecolortheme{default}
+
+\title[Drowsiness Detection]{Driver Drowsiness Detection \\ \large 3D-CNN + LSTM Hybrid Architecture}
+\subtitle{Mid-Project Review}
+\author[Rithik B]{Name: Rithik B \\ Roll No: CB.PS.I5DAS22140}
+\institute{Amrita Vishwa Vidyapeetham}
+\date{\today}
+
+\begin{document}
+
+% Title Slide
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% Slide 1: Internship Details
+\begin{frame}{Internship Details}
+    \vspace{0.5cm}
+    \begin{block}{Offer Information}
+        \vspace{0.3cm}
+        \begin{itemize}
+            \setlength\itemsep{1.2em}
+            \item \textbf{Company:} Techvolt Software Pvt.Ltd
+            \item \textbf{Location:} Coimbatore
+            \item \textbf{Role:} Internship Trainee -- Data Science with Machine Learning
+            \item \textbf{Duration:} 90 Days
+            \item \textbf{Start Date:} 7\textsuperscript{th} September 2026
+        \end{itemize}
+        \vspace{0.3cm}
+    \end{block}
+\end{frame}
+
+% Slide 1: Introduction & Motivation
+\begin{frame}{Introduction \& Motivation}
+    \begin{itemize}
+        \item \textbf{Problem Statement:} Developing a robust, real-time driver drowsiness detection system to prevent road accidents caused by driver fatigue.
+        \item \textbf{Approach:} Binary classification (Alert vs. Drowsy) on short video clips of a driver's face.
+        \item \textbf{Key Innovations:}
+        \begin{itemize}
+            \item \textbf{Hybrid Deep Learning Architecture:} Combining 3D-CNNs for spatial feature learning with LSTMs for temporal patterns.
+            \item \textbf{Multi-modal Inputs:} Fusing raw video frames with specific facial landmarks like Eye Aspect Ratio (EAR) and Mouth Opening Ratio (MOR).
+        \end{itemize}
+        \item \textbf{Goal:} Achieve robust cross-dataset generalization to ensure the model performs well in real-world, unseen conditions.
+    \end{itemize}
+\end{frame}
+
+% Slide 2: Datasets & Strategy
+\begin{frame}{Datasets \& Strategy}
+    \textbf{Datasets Utilized:} Integrated four major public datasets with unified labeling for diverse training conditions:
+    \begin{itemize}
+        \item \textbf{NTHU-DDD}
+        \item \textbf{UTA-RLDD} (Includes 5-fold cross-validation configuration)
+        \item \textbf{NITYMED}
+        \item \textbf{YawDD}
+    \end{itemize}
+    \vspace{0.3cm}
+    
+    \textbf{Dataset Strategy:}
+    \begin{itemize}
+        \item \textbf{Unified Labeling:} Standardized original labels (e.g., microsleep, low vigilance, yawning) into binary categories: Alert (0) / Drowsy (1).
+        \item \textbf{Split Strategy:} Subject-wise 80\% train / 10\% val / 10\% test split to prevent identity leakage between training and evaluation phases.
+    \end{itemize}
+\end{frame}
+
+% Slide 3: Data Preprocessing Pipeline (Completed Work)
+\begin{frame}{Data Preprocessing Pipeline}
+    \textbf{Completed Preprocessing Stages:}
+    \begin{itemize}
+        \item \textbf{Frame Extraction:} Processed raw videos into individual frames at 15 FPS and resized to $224 \times 224$.
+        \item \textbf{Face Cropping:} Implemented InsightFace (RetinaFace) to detect the largest face and perform aligned cropping to $112 \times 112$.
+        \item \textbf{Landmark Extraction:} Utilized MediaPipe FaceMesh on cropped faces to extract robust 478-point 3D facial landmark arrays.
+        \item \textbf{Clip Generation:} Built overlapping 16-frame clips with stride 8 to serve as cohesive spatiotemporal inputs for the model.
+        \item \textbf{Data Splitting:} Automated the generation of split JSONs and metadata CSVs for seamless data loading.
+    \end{itemize}
+\end{frame}
+
+% Slide 4: Proposed Model Architecture
+\begin{frame}{Proposed Model Architecture}
+    \begin{itemize}
+        \item \textbf{Input:} 16-frame RGB clips of cropped faces alongside corresponding sequences of landmark data (EAR/MOR).
+        \item \textbf{Spatiotemporal Backbone:} 
+        \begin{itemize}
+            \item 4$\times$ Conv3D blocks (3$\to$16$\to$32$\to$64$\to$128 channels) for hierarchical feature extraction.
+            \item Temporal pooling is deferred to the end to preserve temporal information.
+        \end{itemize}
+        \item \textbf{Temporal Processing:}
+        \begin{itemize}
+            \item \textbf{Visual Branch:} LSTM layer processes the flattened 3D-CNN spatial features.
+            \item \textbf{Landmark Branch:} Independent LSTM processes behavioral cues (blink rate/yawning) without visual noise.
+        \end{itemize}
+        \item \textbf{Fusion Strategy:} Features from both branches are concatenated and passed through dense classification heads for final prediction.
+    \end{itemize}
+\end{frame}
+
+% Slide 5: Current Status & Future Work
+\begin{frame}{Current Status \& Future Work}
+    \textbf{Current Status (Mid-Review):}
+    \begin{itemize}
+        \item Dataset aggregation and unified preprocessing pipeline are 100\% complete.
+        \item Core model architecture (3D-CNN + LSTM + Landmark branches) is implemented.
+        \item Baseline training scripts and configuration files are ready, with initial smoke tests successfully executed.
+    \end{itemize}
+    \vspace{0.3cm}
+    
+    \textbf{Future Work (For End Review):}
+    \begin{itemize}
+        \item Execute full-scale model training and evaluation across all datasets.
+        \item Perform cross-dataset generalization experiments (e.g., Train on Set A, Evaluate on Set B) to test real-world robustness.
+        \item Implement Grad-CAM visualizations to provide model interpretability.
+    \end{itemize}
+\end{frame}
+
+% Slide 6: References
+\begin{frame}{References}
+    \begin{thebibliography}{99}
+        \bibitem{weng2016} C.-H. Weng, Y.-H. Lai, and S.-H. Lai, ``Driver Drowsiness Detection via a Hierarchical Temporal Deep Belief Network,'' \emph{ACCV Workshop}, 2016.
+        \bibitem{ghoddoosian2019} R. Ghoddoosian, M. Galib, and V. Athitsos, ``A Realistic Dataset and Baseline Temporal Model for Early Drowsiness Detection,'' \emph{CVPRW}, 2019.
+        \bibitem{abtahi2014} S. Abtahi et al., ``YawDD: Yawning Detection Dataset,'' \emph{IEEE Dataport}, 2020.
+        \bibitem{nitymed2020} N. Petrellis et al., ``NITYMED,'' \emph{IEEE Dataport}, 2022.
+        \bibitem{insightface2022} J. Guo, J. Deng, A. Lattas, and S. Zafeiriou, ``Sample and Computation Redistribution for Efficient Face Detection,'' \emph{ICLR}, 2022.
+        \bibitem{mediapipe2019} C. Lugaresi et al., ``MediaPipe: A Framework for Building Perception Pipelines,'' \emph{arXiv:1906.08172}, 2019.
+    \end{thebibliography}
+\end{frame}
+
+\end{document}

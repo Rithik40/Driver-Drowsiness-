@@ -1,0 +1,1309 @@
+\documentclass[journal]{IEEEtran}
+
+% ── Packages ─────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{balance}
+\usepackage[hidelinks]{hyperref}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{textcomp}
+\usepackage{pifont}
+\usepackage{hyperref}
+
+
+% ── Metadata ──────────────────────────────────────────────────
+\title{Multi-Dataset Driver Drowsiness Detection using 3D-CNN--LSTM with Facial Landmark Fusion and Cross-Dataset Generalization Analysis}
+
+\author{
+\IEEEauthorblockN{Harshanth Ravindran, Rithik Balasubramanian, Kirubavathi Ganapathiyappan \IEEEauthorrefmark{1}}\\
+\IEEEauthorblockA{
+\textit{Department of Mathematics} \\
+
+\textit{Amrita School of Physical Sciences},
+\textit{Amrita Vishwa Vidyapeetham} \\
+harshanthravi6474@gmail.com, rithikrithik222@gmail.com,\\ g\_kirubavathi@cb.amrita.edu
+% }\\
+% \and
+% \IEEEauthorblockN{Rithik}
+% \IEEEauthorblockA{
+% \textit{Department of Mathematics} \\
+% \textit{Amrita Vishwa Vidyapeetham} \\
+% Email: cb.ps.i5das22140@cb.students.amrita.edu
+% }
+\IEEEauthorblockA{\IEEEauthorrefmark{1}Corresponding author}
+}
+}
+\begin{document}
+
+\maketitle
+
+% =============================================================
+\begin{abstract}
+Driver drowsiness accounts for roughly 20\% of all fatal highway collisions worldwide, yet prior detection systems are typically evaluated on a single benchmark, leaving cross-domain robustness largely unmeasured. We present a spatiotemporal deep learning framework for real-time binary (alert vs.\ drowsy) driver drowsiness detection that unifies four public benchmarks under a single training and evaluation protocol. The architecture couples a four-block 3D-CNN backbone with a stacked LSTM for temporal modelling, augmented by a parallel landmark LSTM sub-branch encoding per-frame Eye Aspect Ratio (EAR) and Mouth Opening Ratio (MOR) signals from MediaPipe FaceMesh. Trained jointly on NTHU-DDD, YawDD, UTA-RLDD, and NITYMED with strict subject-wise splits, the model achieves macro-F1 of 0.665, 0.377, 0.662, and 0.500, respectively, with AUC of 0.715 and 0.801 on NTHU-DDD and UTA-RLDD. Two cross-dataset experiments quantify domain shift: Experiment~A (train NTHU-DDD+YawDD) attains near-chance F1$\approx$0.48 on unseen UTA-RLDD; Experiment~B (train UTA-RLDD+NITYMED) reaches F1$=$0.734 on seen UTA-RLDD but drops to F1$=$0.421 on unseen NTHU-DDD. Grad-CAM heat-maps confirm physiologically meaningful periocular and oral attention. A real-time webcam pipeline achieves $\geq$25~FPS on an NVIDIA RTX~3050.
+Code is publicly available at \textcolor{blue}{\url{https://github.com/harshanth23/drowsiness-detection}}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Drowsiness detection, 3D convolutional neural network, long short-term memory, eye aspect ratio, mouth opening ratio, Grad-CAM, cross-dataset generalization, real-time inference, spatiotemporal learning, facial landmark fusion
+\end{IEEEkeywords}
+
+% =============================================================
+\section{Introduction}
+\label{sec:intro}
+
+\IEEEPARstart{R}{oad} traffic crashes claim approximately 1.35~million lives annually, with driver fatigue and drowsiness accounting for 15--20\% of all fatal collisions\cite{horne2001,who2023}. The economic toll of drowsy driving---medical costs, property damage, and lost productivity---reaches billions of dollars annually in the US alone\cite{tefft2014}. These statistics underscore the urgent need for automated in-vehicle systems that detect early physiological markers of drowsiness (extended blinks, micro-sleeps, head nodding) with sufficient precision for safety-critical use.
+
+Drowsiness detection methods fall into three families: (i)~\textit{vehicle-based} approaches analyzing steering entropy and lane departure\cite{sahayadhas2012}; (ii)~\textit{physiological} methods using EEG, ECG, or EMG wearables\cite{kaida2006}; and (iii)~\textit{vision-based} methods using a dashboard camera to extract facial cues non-invasively. While vehicle-based signals are confounded by road geometry and physiological sensors require impractical instrumentation for consumer vehicles, vision-based methods offer the best trade-off using a single RGB camera now becoming standard in modern vehicles.
+
+Handcrafted approaches such as the Eye Aspect Ratio (EAR)\cite{soukupova2016} and its extension with Mouth Opening Ratio (MOR)\cite{raza2021} are lightweight but lack temporal context to differentiate voluntary blinks from sustained drowsy eye closure. Frame-level CNN classifiers\cite{weng2016} improve spatial feature extraction but treat each frame independently, while CNN+LSTM hybrids\cite{massoz2018} reintroduce temporal modelling at the cost of an information bottleneck between the two stages. Spatiotemporal architectures (C3D\cite{tran2015}, I3D\cite{carreira2017}, SlowFast\cite{feichtenhofer2019}) excel at action recognition but remain largely unexplored for drowsiness, with most studies relying on a single benchmark.
+
+This single-dataset evaluation norm is a critical barrier to real-world deployment. Each benchmark carries unique biases in camera geometry, illumination, subject demographics, occlusions, and annotation granularity. A model achieving high accuracy on one dataset may fail entirely on another recording environment. Despite this practical significance, systematic cross-dataset evaluation has been largely neglected in the drowsiness literature.
+
+\subsection{Contributions}
+This paper makes the following contributions:
+\begin{enumerate}[leftmargin=*, label=\arabic*)]
+  \item A \textbf{lightweight 3D-CNN + LSTM architecture} ($\sim$8.7M parameters) with asymmetric temporal pooling, designed to run on 4~GB VRAM edge-class GPUs.
+  \item A \textbf{parallel landmark LSTM fusion branch} processing per-frame EAR and MOR signals from MediaPipe FaceMesh~\cite{mediapipe2019}, providing data-driven geometric cues without fixed thresholds.
+  \item A rigorous \textbf{multi-dataset protocol} across NTHU-DDD~\cite{ghoddoosian2019}, YawDD~\cite{abtahi2014}, UTA-RLDD~\cite{ghoddoosian2019}, and NITYMED~\cite{nitymed2020} with strict subject-wise splits preventing identity leakage.
+  \item Two \textbf{cross-dataset generalization experiments} (Exp~A: NTHU-DDD+YawDD $\rightarrow$ UTA-RLDD+NITYMED; Exp~B: reverse) providing, to our knowledge, the first systematic inter-dataset domain-shift quantification in this literature.
+  \item \textbf{Grad-CAM interpretability analysis}~\cite{selvaraju2017} confirming model attention to physiologically relevant periocular and oral regions across all prediction categories.
+  \item A \textbf{real-time inference pipeline} ($\geq$25 FPS on RTX~3050) with face detection, landmark extraction, rolling-buffer clip construction, and live HUD overlay.
+  \item A fully \textbf{open-source codebase} covering preprocessing, training, cross-dataset experiments, Grad-CAM tools, and the real-time demo.
+\end{enumerate}
+
+The remainder is organized as follows: Section~\ref{sec:related} surveys related work; Section~\ref{sec:datasets} describes datasets and preprocessing; Section~\ref{sec:method} presents the architecture; Section~\ref{sec:training} the training protocol; Sections~\ref{sec:eval} and~\ref{sec:cross} report evaluation and cross-dataset results; Section~\ref{sec:gradcam} provides Grad-CAM analysis; Section~\ref{sec:realtime} details real-time inference; Sections~\ref{sec:discussion}--\ref{sec:conclusion} discuss findings and conclusions.
+
+% =============================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Handcrafted Facial Feature Methods}
+\label{sec:related_handcrafted}
+
+Early vision-based systems relied on engineered facial landmark features. PERCLOS~\cite{dinges1998} measures the proportion of time the eyes are closed above a threshold, but degrades under poor illumination and occlusion. Soukupov\'{a} and \v{C}ech~\cite{soukupova2016} proposed the Eye Aspect Ratio (EAR), defined as:
+\begin{equation}
+\text{EAR} = \frac{\|\mathbf{p}_2 - \mathbf{p}_6\| + \|\mathbf{p}_3 - \mathbf{p}_5\|}{2\|\mathbf{p}_1 - \mathbf{p}_4\|},
+\label{eq:ear}
+\end{equation}
+where $\mathbf{p}_1, \ldots, \mathbf{p}_6$ delineate each eye. EAR is computationally efficient but susceptible to head pose and morphological variation. Raza~\textit{et al.}~\cite{raza2021} augmented EAR with Mouth Opening Ratio (MOR) for yawn detection, achieving 77.2\% accuracy on NTHU-DDD; however, rule-based scalar fusion cannot model the temporal dynamics underlying genuine fatigue.
+
+\subsection{CNN-Based Frame-Level Approaches}
+\label{sec:related_cnn}
+
+Weng~\textit{et al.}~\cite{weng2016} trained a VGG-style 2D-CNN on individual frames with majority-vote aggregation for clip-level prediction. Dwivedi~\textit{et al.}~\cite{dwivedi2014} demonstrated the benefit of ImageNet pre-training via fine-tuning, and Park~\textit{et al.}~\cite{park2016} added attention to focus on eye and mouth regions. Despite improved spatial feature extraction, all frame-level methods share the fundamental limitation of treating each frame independently, losing the temporal context that distinguishes a blink from fatigue-onset micro-sleep.
+
+\subsection{Recurrent and Spatiotemporal Models}
+\label{sec:related_spatiotemporal}
+
+Massoz~\textit{et al.}~\cite{massoz2018} piped ResNet frame features through a bidirectional LSTM, improving over frame-level baselines on UTA-RLDD, but the two-stage design creates an information bottleneck. Tran~\textit{et al.}~\cite{tran2015} introduced C3D to jointly capture spatiotemporal patterns; successors---I3D~\cite{carreira2017}, R(2+1)D~\cite{tran2018}, SlowFast~\cite{feichtenhofer2019}---have become the backbone of action recognition but receive limited attention in the drowsiness domain. Our 4-block 3D-CNN preserves temporal resolution in early blocks, then feeds compressed features to an LSTM for longer-range temporal modelling.
+
+\subsection{Multi-Modal and Landmark Fusion}
+\label{sec:related_fusion}
+
+Landmarks provide geometry-based features that complement CNN appearance features~\cite{raza2021,park2016}. Huynh~\textit{et al.}~\cite{huynh2021} demonstrated complementary information from a parallel GRU landmark branch and a spatial-attention CNN. Our parallel landmark LSTM branch adopts this philosophy: EAR/MOR time series are modelled by a dedicated LSTM whose output is concatenated with the main 3D-CNN+LSTM pathway, with the decision boundary learned in a data-driven manner.
+
+\subsection{Cross-Dataset Evaluation and Domain Adaptation}
+\label{sec:related_cross}
+
+Cross-dataset evaluation is largely absent in the drowsiness literature. Ghoddoosian~\textit{et al.}~\cite{ghoddoosian2019} noted within-dataset variability in NTHU-DDD but did not assess cross-benchmark transfer; UTA-RLDD's authors evaluated only within the standard 5-fold protocol. Techniques such as DANN~\cite{ganin2016}, curriculum learning, and contrastive domain alignment have closing domain gaps in broader computer vision, but their effectiveness for the specific domain shifts present across drowsiness benchmarks remains unexplored. Section~\ref{sec:cross} provides quantitative baselines.
+
+\subsection{Explainability and Real-Time Deployment}
+\label{sec:related_xai}
+
+Interpretability is critical for safety-critical ADAS deployment. Grad-CAM~\cite{selvaraju2017} is the standard tool for CNN saliency visualization, with 3D extensions applicable to spatiotemporal models. Saliency maps have been used in medical imaging to confirm that models attend to clinically relevant regions rather than dataset artifacts~\cite{zech2018}. Driver monitoring is part of the Euro NCAP 2025 roadmap~\cite{euroncap2020}, motivating efficient architectures. Model compression (distillation~\cite{hinton2015}, pruning, quantization) can reduce inference latency, but its interaction with drowsiness accuracy remains unstudied. Our 8.7M-parameter model achieves real-time performance by design, without post-hoc compression.
+
+% =============================================================
+\section{Datasets and Preprocessing Pipeline}
+\label{sec:datasets}
+
+We use four publicly available driver drowsiness detection datasets which have been chosen to cover a diverse set of recording conditions, subject pools and annotation protocols. The table~\ref{tab:class_balance} depicts class distributions across all four datasets in the training and test partitions. It is important to know the class balance since it directly comes into play during model training (weighted cross-entropy loss function) and also how evaluation metrics are interpreted.
+
+\begin{table*}[t]
+  \caption{Comprehensive Dataset Summary}
+  \label{tab:datasets}
+  \centering
+  \small
+  \begin{tabular}{lccccccl}
+    \toprule
+    Dataset & Year & Subjects & Approx.\ Hours & Original Labels & Recording Conditions & Camera Setup & Split Strategy \\
+    \midrule
+    NTHU-DDD~\cite{ghoddoosian2019}  & 2019 & 18  & 9.5 & Binary (alert/drowsy) & Lab, varied glasses/lighting & Front-facing, RGB & 80/20 subject-wise \\
+    YawDD~\cite{abtahi2014}           & 2020 & 119 & 2.6 & Binary (normal/yawning) & In-vehicle, daylight & Dashboard + rear-view & 80/20 subject-wise \\
+    UTA-RLDD~\cite{ghoddoosian2019} & 2019 & 60  & 30  & 3-class $\rightarrow$ Binary & Office/lab, naturalistic & Laptop/webcam & Official 5-fold CV \\
+    NITYMED~\cite{nitymed2020}        & 2022 & 21  & 4.0 & Drowsy-only (microsleep, yawning) & Lab, controlled & Front-facing & 80/20 subject-wise \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\subsection{Data Distribution and Class Balance}
+\label{sec:data_dist}
+
+Table~\ref{tab:class_balance} summarizes clip counts and class distributions. The combined set has moderate class imbalance (57.9\% drowsy), driven by NITYMED being drowsy-only; weighted cross-entropy (Section~\ref{sec:loss}) compensates by upweighting the alert class. YawDD is the smallest (1,800 clips) and most imbalanced (76.7\% normal), explaining weak yawning detection. UTA-RLDD dominates with 81,712 clips at 54.6\% drowsy, making it the most statistically powerful benchmark. The training signal is dominated by UTA-RLDD and NTHU-DDD, which correlates with the model performing best on these two datasets (F1 of 0.662 and 0.665, respectively).
+
+\begin{table}[t]
+  \caption{Class Distribution Across Datasets (Train + Test)}
+  \label{tab:class_balance}
+  \centering
+  \small
+  \begin{tabular}{lrrrr}
+    \toprule
+    Dataset & Alert & Drowsy & Total & Drowsy \% \\
+    \midrule
+    NTHU-DDD  & 32{,}965 & 25{,}456 & 58{,}421 & 43.6\% \\
+    YawDD     & 1{,}380  & 420     & 1{,}800  & 23.3\% \\
+    UTA-RLDD  & 37{,}123 & 44{,}589 & 81{,}712 & 54.6\% \\
+    NITYMED   & 0       & 27{,}705 & 27{,}705 & 100\% \\
+    \midrule
+    Combined  & 71{,}468 & 98{,}170 & 169{,}638 & 57.9\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{NTHU-DDD}
+\label{sec:ds_nthu}
+NTHU-DDD~\cite{ghoddoosian2019} contains 18 subjects recorded across five conditions (no glasses, regular glasses, sunglasses $\times$ daytime, nighttime), yielding $\sim$20 binary-labeled (alert/drowsy) clips per subject with three drowsy sub-types: slow blink with nodding, yawning, and combined sleepy state. Its front-facing camera and controlled lighting make it one of the cleanest available benchmarks.
+
+\subsection{YawDD}
+\label{sec:ds_yawdd}
+YawDD~\cite{abtahi2014} contains 322 in-vehicle clips from 119 subjects using two camera geometries (dashboard-mounted and seatbelt-level), labeled as \textit{normal} or \textit{yawning}. Despite its large subject pool, the dataset covers only $\sim$2.6 hours with severe class imbalance (76.7\% normal), making it the most challenging benchmark.
+
+\subsection{UTA-RLDD}
+\label{sec:ds_uta}
+UTA-RLDD~\cite{ghoddoosian2019} is the largest dataset, with 60 subjects each performing three 10-minute webcam tasks (alert, low-vigilance, drowsy). We merge low-vigilance and drowsy into a single positive class and follow the official 5-fold subject-stratified cross-validation, using fold~0 as the held-out test set.
+
+\subsection{NITYMED}
+\label{sec:ds_nitymed}
+NITYMED~\cite{nitymed2020} captures microsleep and yawning from 21 subjects but contains \emph{only drowsy-class} samples, making standard binary evaluation ill-defined (trivial accuracy, macro-F1$=$0.5 by construction). It serves exclusively as a training-time source of diverse drowsy examples.
+
+\subsection{Preprocessing Pipeline}
+\label{sec:preprocessing}
+We apply a five-stage pipeline (Fig.~\ref{fig:pipeline}) to convert raw video from all four datasets into model-ready tensors.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.5\textwidth]{Images/Preprocessing_diag.jpg}
+  \caption{Five-stage preprocessing pipeline. Raw video from four datasets is processed through frame extraction, face detection and cropping, landmark extraction, sliding-window clip construction, and subject-wise data splitting to produce standardized model-ready tensors.}
+  \label{fig:pipeline}
+\end{figure*}
+
+\subsubsection{Stage 1: Frame Extraction}
+Raw videos are decoded with OpenCV at 15~FPS ($\lfloor\text{native\_fps}/15\rfloor$ step), frames resized to $224\times224$ and stored as JPEG (quality=80). A master metadata CSV links each file to its dataset, subject, and label for reproducible cross-dataset extraction.
+
+\subsubsection{Stage 2: Face Detection and Cropping}
+InsightFace RetinaFace~\cite{insightface2022} (\texttt{buffalo\_l}, CUDA-accelerated ONNX) detects and crops the face region from each frame, resized to $112\times112$ pixels. Frames with no detected face are discarded.
+
+\subsubsection{Stage 3: Landmark Extraction}
+MediaPipe FaceMesh~\cite{mediapipe2019} (\texttt{refine\_landmarks=True}) yields 478 3D landmarks per frame, saved as NumPy arrays. Two physiological scalars are computed:
+
+\textbf{Eye Aspect Ratio (EAR).} Averaged over both eyes using six landmarks per eye (Eq.~\eqref{eq:ear}), providing a scale-invariant measure of eye openness.
+
+\textbf{Mouth Opening Ratio (MOR).} Using four lip landmarks (indices 13, 14, 61, 291):
+\begin{equation}
+\text{MOR} = \frac{\|\mathbf{p}_{\text{top}} - \mathbf{p}_{\text{bot}}\|}{\|\mathbf{p}_{\text{left}} - \mathbf{p}_{\text{right}}\| + \epsilon},
+\label{eq:mor}
+\end{equation}
+where $\epsilon=10^{-6}$ prevents division by zero.
+
+\subsubsection{Stage 4: Sliding-Window Clip Construction}
+Face-cropped frames are grouped into clips of $T{=}16$ frames with stride~8 (50\% overlap) to ensure drowsy events straddling a boundary appear in at least one clip. Clips with fewer than $T$ frames are discarded. Resulting counts are in Table~\ref{tab:clip_counts}.
+
+\begin{table}[t]
+  \caption{Clip Counts by Dataset and Split}
+  \label{tab:clip_counts}
+  \centering
+  \small
+  \begin{tabular}{lccc}
+    \toprule
+    Dataset & Train Clips & Val Clips & Test Clips \\
+    \midrule
+    NTHU-DDD    & \multicolumn{2}{c}{train+val combined} & 13{,}287 \\
+    YawDD       & \multicolumn{2}{c}{train+val combined} & 360 \\
+    UTA-RLDD    & \multicolumn{2}{c}{train+val combined} & 16{,}471 \\
+    NITYMED     & \multicolumn{2}{c}{train+val combined} & 5{,}541 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Stage 5: Subject-Wise Data Splitting}
+To prevent identity leakage, we partition at the subject level using \texttt{GroupShuffleSplit} for NTHU-DDD, YawDD, and NITYMED (seed 42; 80/20 train+val/test, then 90/10 inner split). For UTA-RLDD, we follow the official 5-fold protocol with fold~0 as the test set. For YawDD (no explicit subject IDs), composite keys of \texttt{label/video\_name} serve as proxy subjects.
+
+% =============================================================
+\section{Proposed Method}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+\label{sec:formulation}
+
+We formulate driver drowsiness detection as a binary video-clip classification task. Let $\mathcal{D} = \{\mathcal{D}_1, \mathcal{D}_2, \ldots, \mathcal{D}_K\}$ denote a collection of $K$ datasets, where each dataset $\mathcal{D}_k = \{(\mathbf{X}_i^{(k)}, \mathbf{L}_i^{(k)}, y_i^{(k)})\}_{i=1}^{N_k}$ consists of $N_k$ video clips with associated landmark sequences and binary labels $y_i \in \{0, 1\}$ (alert$=$0, drowsy$=$1). Each video clip $\mathbf{X}_i \in \mathbb{R}^{3 \times T \times H \times W}$ is a tensor of $T$ face-cropped RGB frames of spatial resolution $H \times W$, and the corresponding landmark sequence $\mathbf{L}_i \in \mathbb{R}^{T \times 2}$ contains per-frame Eye Aspect Ratio (EAR) and Mouth Opening Ratio (MOR) values.
+
+The objective is to learn a parameterized mapping $f_\theta: (\mathbf{X}, \mathbf{L}) \mapsto [0,1]$ that predicts the probability of drowsiness from the joint video and landmark inputs. The model parameters $\theta$ are optimized over the union $\bigcup_{k=1}^{K} \mathcal{D}_k$ of all datasets, and evaluation is performed on held-out subject-disjoint test partitions. We further assess generalization through cross-dataset experiments where training and test datasets are entirely disjoint.
+
+\subsection{Architecture Overview}
+\label{sec:arch_overview}
+
+Fig.~\ref{fig:arch} provides a schematic overview of the proposed architecture. The model accepts two inputs: a face-crop clip tensor $\mathbf{X}\in\mathbb{R}^{3\times T\times H\times W}$ (where $T{=}16$, $H{=}W{=}112$) and an optional landmark sequence $\mathbf{L}\in\mathbb{R}^{T\times 2}$ containing per-frame EAR and MOR values. The architecture comprises four components: a 3D-CNN backbone, a main LSTM, a parallel landmark LSTM branch, and a classifier head.
+
+The forward pass can be summarized as:
+\begin{equation}
+\begin{aligned}
+  \mathbf{F} &= \text{Backbone}(\mathbf{X}) \in \mathbb{R}^{B \times 2 \times 512}, \\
+  \mathbf{h}_{\text{vid}} &= \text{LSTM}(\mathbf{F}) \in \mathbb{R}^{B \times 256}, \\
+  \mathbf{h}_{\text{lm}} &= \text{LSTM}_{\text{lm}}(\mathbf{L}) \in \mathbb{R}^{B \times 64}, \\
+  \hat{y} &= \text{Classifier}([\mathbf{h}_{\text{vid}}; \mathbf{h}_{\text{lm}}]) \in \mathbb{R}^{B \times 2}.
+\end{aligned}
+\label{eq:forward}
+\end{equation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{Images/Architect_Diag.jpg}
+  \caption{Proposed 3D-CNN + LSTM architecture with parallel landmark fusion branch. The backbone extracts spatiotemporal features from 16-frame face-crop clips; the main LSTM captures temporal dynamics; the landmark LSTM encodes EAR/MOR sequences; both pathways are fused before the classifier head.}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{3D-CNN Backbone}
+\label{sec:backbone}
+
+The backbone consists of four sequential convolutional blocks, each implementing the pattern:
+\begin{equation}
+\begin{aligned}
+  \text{Block}_i: \quad &\text{Conv3D}(k{=}3, \text{pad}{=}1) \rightarrow \text{BN3D} \rightarrow \text{ReLU} \\
+  &\rightarrow \text{MaxPool3D}(s_i) \rightarrow \text{Dropout3D}(p{=}0.2),
+\end{aligned}
+\label{eq:block}
+\end{equation}
+where $s_i$ denotes the block-specific pooling stride. Table~\ref{tab:backbone} details the channel counts, pooling parameters, and resultant tensor dimensions at each stage.
+
+\begin{table}[t]
+  \caption{3D-CNN Backbone Dimensions ($B{=}$batch, $T{=}16$, $H{=}W{=}112$)}
+  \label{tab:backbone}
+  \centering
+  \small
+  \begin{tabular}{lccccc}
+    \toprule
+    Block & $C_{\text{out}}$ & Pool Kernel & Pool Stride & $T'$ & $H'{\times}W'$ \\
+    \midrule
+    Input & 3   & --- & --- & 16 & $112\times112$ \\
+    1     & 16  & $(1,2,2)$ & $(1,2,2)$ & 16 & $56\times56$ \\
+    2     & 32  & $(2,2,2)$ & $(2,2,2)$ & 8  & $28\times28$ \\
+    3     & 64  & $(2,2,2)$ & $(2,2,2)$ & 4  & $14\times14$ \\
+    4     & 128 & $(2,2,2)$ & $(2,2,2)$ & 2  & $7\times7$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Pooling strategy.} A key design choice is the asymmetric pooling in Block~1, which uses stride $(1,2,2)$ to halve the spatial dimensions while preserving the full temporal resolution of 16~frames. Blocks 2--4 apply symmetric $(2,2,2)$ pooling, progressively reducing both spatial and temporal dimensions. This strategy ensures that the shallow network retains fine-grained temporal information through the first block, where individual facial micro-expressions (a single blink frame, the onset of a yawn) are most readily captured. By the output of Block~4, the tensor has dimensions $(B, 128, 2, 7, 7)$, where the temporal dimension has been compressed from 16 to 2 timesteps.
+
+\textbf{Spatial flattening and projection.} The Block~4 output is reshaped by permuting the temporal and channel dimensions, then flattening the spatial dimensions:
+\begin{equation}
+\mathbf{F} \in \mathbb{R}^{B \times 2 \times (128 \cdot 7 \cdot 7)} = \mathbb{R}^{B \times 2 \times 6272}.
+\end{equation}
+A linear projection layer maps each 6272-dimensional vector to a 512-dimensional representation, followed by Layer Normalization:
+\begin{equation}
+\mathbf{F}_{\text{proj}} = \text{LayerNorm}(\mathbf{W}_{\text{proj}}\mathbf{F} + \mathbf{b}_{\text{proj}}) \in \mathbb{R}^{B \times 2 \times 512}.
+\end{equation}
+
+\textbf{Weight initialization.} All convolutional and linear layers are initialized using Kaiming Normal initialization~\cite{he2015} (fan-in, ReLU nonlinearity). Batch normalization layers are initialized with unit weight and zero bias.
+
+\subsection{LSTM Temporal Modelling}
+\label{sec:lstm}
+
+The projected feature sequence $\mathbf{F}_{\text{proj}} \in \mathbb{R}^{B \times T' \times 512}$ (where $T'{=}2$) is passed through a single-layer LSTM with hidden dimension $d_h = 256$:
+\begin{equation}
+(\_, (\mathbf{h}_N, \_)) = \text{LSTM}(\mathbf{F}_{\text{proj}}; \theta_{\text{lstm}}),
+\end{equation}
+and the final hidden state $\mathbf{h}_N \in \mathbb{R}^{B \times 256}$ is extracted as the temporal summary vector.
+
+Although the compressed sequence length ($T'{=}2$) is short, the LSTM provides learnable gating dynamics that combine the two temporal positions non-linearly, and its cell state offers a natural pathway for streaming inference across consecutive clips.
+
+\subsection{Parallel Landmark LSTM Branch}
+\label{sec:landmark_branch}
+
+A dedicated 1-layer LSTM ($d_h{=}64$) processes the landmark sequence $\mathbf{L} \in \mathbb{R}^{B \times T \times 2}$:
+\begin{equation}
+(\_, (\mathbf{h}_{\text{lm}}, \_)) = \text{LSTM}_{\text{lm}}(\mathbf{L}; \theta_{\text{lm}}),
+\end{equation}
+yielding $\mathbf{h}_{\text{lm}} \in \mathbb{R}^{B \times 64}$. Operating at full $T{=}16$ resolution, it captures blink frequency, duration, and yawn dynamics that the 2-step compressed video branch cannot represent. EAR and MOR are geometric, appearance-independent features, making this branch robust to illumination and texture changes.
+
+\subsection{Feature Fusion and Classifier Head}
+\label{sec:head}
+
+The main LSTM output $\mathbf{h}_N$ and the landmark LSTM output $\mathbf{h}_{\text{lm}}$ are concatenated to form the fused representation:
+\begin{equation}
+\mathbf{h}_{\text{fused}} = [\mathbf{h}_N; \mathbf{h}_{\text{lm}}] \in \mathbb{R}^{B \times 320}.
+\end{equation}
+The classifier head applies a two-layer feedforward network with ReLU activation and Dropout:
+\begin{equation}
+\text{logits} = \mathbf{W}_2 \, \text{ReLU}\!\left(\mathbf{W}_1 \mathbf{h}_{\text{fused}} + \mathbf{b}_1\right) + \mathbf{b}_2,
+\label{eq:classifier}
+\end{equation}
+with dimensions $\mathbf{W}_1 \in \mathbb{R}^{160 \times 320}$, $\mathbf{W}_2 \in \mathbb{R}^{2 \times 160}$, and Dropout$(p{=}0.3)$ applied between the two linear layers. The output logits are a 2-dimensional vector corresponding to the alert and drowsy classes.
+
+\subsection{Model Complexity}
+\label{sec:complexity}
+
+Table~\ref{tab:params} shows the parameter breakdown. The full model has $\approx$\textbf{8.7M trainable parameters}---far smaller than C3D (78M), I3D (25M), or SlowFast (34M)---suitable for edge-class GPUs with limited VRAM.
+
+\begin{table}[t]
+  \caption{Parameter Count by Component}
+  \label{tab:params}
+  \centering
+  \begin{tabular}{lr}
+    \toprule
+    Component & Parameters \\
+    \midrule
+    3D-CNN Backbone (4 blocks) & 813{,}440 \\
+    Spatial Projection + LayerNorm & 3{,}213{,}824 \\
+    Main LSTM ($d_h{=}256$, 1 layer) & 787{,}456 \\
+    Landmark LSTM ($d_h{=}64$, 1 layer) & 17{,}152 \\
+    Classifier Head & 51{,}522 \\
+    Batch Norm parameters & 480 \\
+    \midrule
+    \textbf{Total} & $\approx$\textbf{8.7M} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% =============================================================
+\section{Training Protocol}
+\label{sec:training}
+
+\subsection{Loss Function}
+\label{sec:loss}
+
+We employ \textbf{weighted cross-entropy loss} to address class imbalance across the combined multi-dataset training set:
+\begin{equation}
+\mathcal{L} = -\sum_{i=1}^{N} w_{y_i} \log \frac{\exp(z_{i, y_i})}{\sum_{c=1}^{C} \exp(z_{i,c})},
+\end{equation}
+where $z_{i,c}$ denotes the logit for sample $i$ and class $c$, $y_i$ is the ground-truth label, and $w_c$ is the class weight computed as:
+\begin{equation}
+w_c = \frac{N}{C \cdot n_c},
+\end{equation}
+where $N$ is the total training count, $C{=}2$ classes, and $n_c$ the count of class $c$ samples. Weights are computed from the clip record list without any image I/O.
+
+\subsection{Optimizer and Learning Rate Schedule}
+\label{sec:optimizer}
+
+We use the Adam optimizer~\cite{kingma2015} with $\beta_1{=}0.9$, $\beta_2{=}0.999$, and weight decay $\lambda{=}10^{-4}$. The initial learning rate is set to $\eta_0 = 10^{-4}$ and decayed via cosine annealing~\cite{loshchilov2017}:
+\begin{equation}
+\eta_t = \eta_{\min} + \frac{1}{2}(\eta_0 - \eta_{\min})\left(1 + \cos\frac{\pi t}{T_{\max}}\right),
+\end{equation}
+where $\eta_{\min} = 10^{-6}$ and $T_{\max} = 30$ epochs. This smooth schedule avoids abrupt learning-rate drops and is known to improve convergence.
+
+\subsection{Data Augmentation}
+\label{sec:augmentation}
+
+During training, we apply the following augmentations per frame (all clips share the same random augmentation within a clip for temporal consistency):
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Random horizontal flip} ($p{=}0.5$): simulates driver-side camera placement variation.
+  \item \textbf{Color jitter}: brightness $\pm 0.3$, contrast $\pm 0.3$, saturation $\pm 0.2$---models illumination variability across datasets.
+  \item \textbf{Random crop}: $112\times112$ from a $120\times120$ padded image (8-pixel padding)---introduces spatial jitter.
+\end{itemize}
+Validation and test transforms apply only center-crop resizing to $112\times112$ followed by ImageNet normalization ($\mu = [0.485, 0.456, 0.406]$, $\sigma = [0.229, 0.224, 0.225]$).
+
+\subsection{Training Configuration}
+\label{sec:train_config}
+
+Table~\ref{tab:hyperparams} summarizes the full hyperparameter configuration. Mixed-precision training via \texttt{torch.cuda.amp} (FP16 forward/backward, FP32 master weights) reduces GPU memory ~40\% and accelerates training ~25\%. Gradients are clipped at norm~1.0 to prevent LSTM explosion, and a fixed seed of~42 ensures reproducibility.
+
+\begin{table}[t]
+  \caption{Training Hyperparameters}
+  \label{tab:hyperparams}
+  \centering
+  \begin{tabular}{ll}
+    \toprule
+    Hyperparameter & Value \\
+    \midrule
+    Optimizer              & Adam ($\beta_1{=}0.9$, $\beta_2{=}0.999$) \\
+    Initial learning rate  & $1\times10^{-4}$ \\
+    LR schedule            & Cosine Annealing ($\eta_{\min}=10^{-6}$, $T_{\max}=30$) \\
+    Batch size             & 32 \\
+    Maximum epochs         & 30 \\
+    Early stop patience    & 12 \\
+    Gradient clipping      & Max norm $= 1.0$ \\
+    Loss function          & Weighted Cross-Entropy \\
+    Mixed precision        & \texttt{torch.cuda.amp} (FP16/FP32) \\
+    Random seed            & 42 \\
+    Dropout (backbone)     & 0.2 (3D blocks) \\
+    Dropout (classifier)   & 0.3 \\
+    Weight decay           & $10^{-4}$ \\
+    \# Workers (DataLoader)& 4 \\
+    Pin memory             & True \\
+    Persistent workers     & True \\
+    Prefetch factor        & 4 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Early Stopping and Checkpointing}
+\label{sec:earlystop}
+
+We monitor validation macro-F1 after each epoch. The model checkpoint (including model weights, optimizer state, scheduler state, and GradScaler state) is saved whenever validation F1 improves over the previous best. Training is terminated early if no improvement is observed for 12 consecutive epochs (patience=12). Additionally, periodic checkpoints are saved every 5 epochs regardless of improvement.
+
+\subsection{Training Algorithm}
+\label{sec:algorithm}
+
+Algorithm~\ref{alg:training} presents the complete training procedure, integrating all components described above: weighted cross-entropy loss, cosine-annealed learning rate, mixed-precision forward/backward passes, gradient clipping, and validation-based early stopping.
+
+\begin{algorithm}[t]
+\caption{Multi-Dataset Training with Early Stopping}
+\label{alg:training}
+\begin{algorithmic}[1]
+\REQUIRE Combined dataset $\mathcal{D}_{\text{train}} = \bigcup_k \mathcal{D}_k^{\text{train}}$, validation set $\mathcal{D}_{\text{val}}$
+\REQUIRE Model $f_\theta$, max epochs $E$, patience $P$, batch size $B$
+\STATE Compute class weights $w_c = N / (C \cdot n_c)$ from $\mathcal{D}_{\text{train}}$
+\STATE Initialize optimizer Adam($\theta$, $\eta_0{=}10^{-4}$, $\lambda{=}10^{-4}$)
+\STATE Initialize scheduler CosineAnnealing($\eta_{\min}{=}10^{-6}$, $T_{\max}{=}E$)
+\STATE Initialize GradScaler for mixed-precision training
+\STATE $\text{best\_f1} \leftarrow 0$; $\text{wait} \leftarrow 0$
+\FOR{epoch $= 1$ \TO $E$}
+  \STATE Shuffle $\mathcal{D}_{\text{train}}$ into mini-batches of size $B$
+  \FOR{each $(\mathbf{X}_b, \mathbf{L}_b, \mathbf{y}_b) \in \mathcal{D}_{\text{train}}$}
+    \STATE \textbf{Forward} (FP16): $\hat{\mathbf{y}}_b = f_\theta(\mathbf{X}_b, \mathbf{L}_b)$
+    \STATE $\mathcal{L}_b = \text{WeightedCE}(\hat{\mathbf{y}}_b, \mathbf{y}_b; \mathbf{w})$
+    \STATE \textbf{Backward}: GradScaler.scale($\mathcal{L}_b$).backward()
+    \STATE Clip $\|\nabla_\theta\|_2 \leq 1.0$
+    \STATE GradScaler.step(optimizer); GradScaler.update()
+  \ENDFOR
+  \STATE scheduler.step()
+  \STATE $\text{F1}_{\text{val}} \leftarrow \text{Evaluate}(f_\theta, \mathcal{D}_{\text{val}})$ \COMMENT{macro-F1}
+  \IF{$\text{F1}_{\text{val}} > \text{best\_f1}$}
+    \STATE $\text{best\_f1} \leftarrow \text{F1}_{\text{val}}$; save $\theta^*$; $\text{wait} \leftarrow 0$
+  \ELSE
+    \STATE $\text{wait} \leftarrow \text{wait} + 1$
+  \ENDIF
+  \IF{$\text{wait} \geq P$}
+    \STATE \textbf{break} \COMMENT{Early stopping triggered}
+  \ENDIF
+\ENDFOR
+\RETURN $\theta^*$ \COMMENT{Best checkpoint by val macro-F1}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Training Dynamics}
+\label{sec:dynamics}
+
+Fig.~\ref{fig:training} shows training and validation curves for the full multi-dataset model. Training loss decreases monotonically from 0.326 (epoch~1) to 0.043 (epoch~24), while validation loss oscillates due to the heterogeneous multi-source data. Validation macro-F1 peaks at \textbf{0.774} at epoch~12 (selected as best checkpoint); early stopping triggers at epoch~24. The 22-point gap between training accuracy (98.7\%) and validation accuracy (76.7\%) indicates moderate overfitting partially mitigated by dropout and weight decay.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/loss_curve.png}
+    \caption{Train/Val Loss}
+    \label{fig:loss_curve}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/val_f1_curve.png}
+    \caption{Validation F1}
+    \label{fig:f1_curve}
+  \end{subfigure}
+  \caption{Full-model training curves over 24 epochs (early stop triggered). (a)~Training loss decreases monotonically to 0.043; validation loss oscillates due to multi-source data heterogeneity. (b)~Validation macro-F1 peaks at 0.774 at epoch~12 (best checkpoint).}
+  \label{fig:training}
+\end{figure}
+
+% =============================================================
+\section{Evaluation Results}
+\label{sec:eval}
+
+We evaluate the best checkpoint (epoch~12, val-F1$=$0.774) on the held-out test partitions of all four datasets. Table~\ref{tab:results} reports the per-dataset metrics.
+
+\begin{table}[t]
+  \caption{Full-Model Test Performance (Best Checkpoint, Epoch~12)}
+  \label{tab:results}
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lrrrrrc}
+    \toprule
+    Dataset     & $N$       & Acc   & Prec  & Rec   & F1    & AUC \\
+    \midrule
+    NTHU-DDD    & 13{,}287  & 0.741 & 0.698 & 0.655 & 0.665 & 0.715 \\
+    YawDD       & 360       & 0.606 & 0.303 & 0.500 & 0.377 & 0.128 \\
+    UTA-RLDD    & 16{,}471  & 0.737 & 0.842 & 0.667 & 0.662 & 0.801 \\
+    NITYMED     & 5{,}541   & 0.999 & 0.500 & 0.499 & 0.500 & N/A \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{NTHU-DDD Analysis}
+\label{sec:eval_nthu}
+The model achieves 74.1\% accuracy on NTHU-DDD (macro-F1$=$0.665; AUC$=$0.715). The precision--recall asymmetry (0.698 vs.\ 0.655) reflects an alert-class bias: glasses and nighttime conditions occlude the eye region, causing more false negatives than false positives (Fig.~\ref{fig:cm}a).
+
+\subsection{YawDD Analysis}
+\label{sec:eval_yawdd}
+YawDD is the hardest benchmark (F1$=$0.377, AUC$=$0.128), due to: (i)~only 360 test clips with 76.7\% normal, causing severe imbalance; (ii)~two incompatible camera geometries; and (iii)~short sporadic yawning events. The model defaults to alert predictions, achieving 60.6\% accuracy by majority-class bias.
+
+\subsection{UTA-RLDD Analysis}
+\label{sec:eval_uta}
+UTA-RLDD yields the strongest results (F1$=$0.662, AUC$=$0.801). High precision (0.842) indicates reliable drowsiness predictions; lower recall (0.667) reflects difficulty with borderline low-vigilance clips merged into the drowsy class. The 60-subject naturalistic setup provides sufficient training diversity for within-dataset generalization.
+
+\subsection{NITYMED Analysis}
+\label{sec:eval_nitymed}
+NITYMED trivially achieves 99.9\% accuracy but macro-F1$=$0.500 by construction (no alert samples). AUC is undefined. NITYMED's value is purely as a training-time source of diverse drowsy examples.
+
+\subsection{Confusion Matrix and ROC Analysis}
+\label{sec:eval_cm}
+Confusion matrices (Fig.~\ref{fig:cm}) confirm the above patterns: NTHU-DDD shows slight false-negative bias; UTA-RLDD has high alert-class recall; YawDD is dominated by the normal class; NITYMED classifies all clips as drowsy. ROC curves (Fig.~\ref{fig:roc}) show AUC of 0.715 and 0.801 for NTHU-DDD and UTA-RLDD respectively. The UTA-RLDD curve demonstrates operationally meaningful sensitivity: 60\% true positive rate at only 20\% false-positive rate. YawDD's below-diagonal AUC (0.128) indicates anticorrelated confidence scores---normal clips receive higher drowsy probability than yawning ones, a symptom of cross-dataset feature confusion.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix.png}
+    \caption{NTHU-DDD}
+    \label{fig:cm_nthu}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_2.png}
+    \caption{YawDD}
+    \label{fig:cm_yawdd}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_3.png}
+    \caption{UTA-RLDD}
+    \label{fig:cm_uta}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_4.png}
+    \caption{NITYMED}
+    \label{fig:cm_nitymed}
+  \end{subfigure}
+  \caption{Per-dataset confusion matrices on held-out test partitions. Rows indicate true labels; columns indicate predicted labels. (a)~NTHU-DDD shows balanced errors with slight false-negative bias. (b)~YawDD is dominated by the normal class. (c)~UTA-RLDD exhibits high alert-class recall. (d)~NITYMED trivially classifies all samples as drowsy.}
+  \label{fig:cm}
+\end{figure}
+
+\subsection{ROC Curve Analysis}
+\label{sec:eval_roc}
+
+Fig.~\ref{fig:roc} shows per-dataset ROC curves. UTA-RLDD achieves AUC$=$0.801 with a steep initial rise (60\% TPR at 20\% FPR), demonstrating operationally useful discrimination. NTHU-DDD (AUC$=$0.715) shows a more gradual curve owing to occluded conditions. YawDD's below-diagonal AUC (0.128) indicates that the model's confidence scores are \textit{anticorrelated} with true labels---normal clips receive higher drowsy probability than actual yawning clips, likely because short YawDD yawning events do not match the prolonged drowsiness patterns learned from other datasets.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/nthu_roc_curve.png}
+    \caption{NTHU-DDD (AUC$=$0.715)}
+    \label{fig:roc_nthu}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/yawdd_roc_curve.png}
+    \caption{YawDD (AUC$=$0.128)}
+    \label{fig:roc_yawdd}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/uta_roc_curve.png}
+    \caption{UTA-RLDD (AUC$=$0.801)}
+    \label{fig:roc_uta}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/nitymed_roc_curve.png}
+    \caption{NITYMED (single-class)}
+    \label{fig:roc_nitymed}
+  \end{subfigure}
+  \caption{Per-dataset ROC curves for the full multi-dataset model. (a)~NTHU-DDD shows moderate discriminative ability with AUC$=$0.715, with the curve bowing above the diagonal. (b)~YawDD's AUC$=$0.128 falls below the chance diagonal, indicating systematic misranking of yawning clips. (c)~UTA-RLDD achieves the strongest AUC$=$0.801, with a steep initial rise indicating high sensitivity at low false positive rates. (d)~NITYMED's ROC is degenerate due to single-class ground truth.}
+  \label{fig:roc}
+\end{figure}
+\subsection{Inference Throughput}
+\label{sec:throughput}
+On the NVIDIA RTX~3050 (CUDA~12.1), the model processes $\approx$28.8 clips/sec (461~frames/sec at $T{=}16$) over 200 warm-up-excluded runs, comfortably exceeding the 10~FPS real-time threshold.
+
+\begin{table}[t]
+  \caption{Full-Model Per-Epoch Training Summary (Selected Epochs)}
+  \label{tab:epoch_detail}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{rcccccc}
+    \toprule
+    Ep. & Tr.~Loss & Tr.~Acc & Val~Loss & Val~Acc & Val~F1 & LR ($\times10^{-5}$) \\
+    \midrule
+    1  & 0.326 & 84.6\% & 1.122 & 77.2\% & 0.724 & 9.97 \\
+    3  & 0.145 & 94.6\% & 1.119 & 82.7\% & 0.761 & 9.76 \\
+    6  & 0.104 & 96.4\% & 1.449 & 78.3\% & 0.726 & 9.05 \\
+    9  & 0.086 & 97.1\% & 1.533 & 78.7\% & 0.739 & 7.96 \\
+    \textbf{12} & \textbf{0.075} & \textbf{97.6\%} & \textbf{1.350} & \textbf{82.7\%} & \textbf{0.774} & \textbf{6.58} \\
+    15 & 0.066 & 97.9\% & 1.454 & 75.4\% & 0.704 & 5.05 \\
+    18 & 0.056 & 98.2\% & 1.444 & 78.8\% & 0.718 & 3.52 \\
+    21 & 0.049 & 98.5\% & 1.551 & 78.2\% & 0.690 & 2.14 \\
+    24 & 0.043 & 98.7\% & 1.581 & 76.7\% & 0.682 & 1.05 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+\subsection{Inference Throughput}
+\label{sec:throughput}
+
+On the NVIDIA RTX~3050 (4~GB VRAM, CUDA~12.1), the model processes synthetic clip tensors at approximately 28.8~clips/sec (approximately 461~frames/sec at $T{=}16$), measured over 200 warm-up-excluded inference runs. This throughput comfortably exceeds the 10~FPS real-time threshold for video-rate drowsiness detection.
+
+% =============================================================
+\section{Cross-Dataset Generalization Experiments}
+\label{sec:cross}
+
+To quantify the domain shift between recording environments and its impact on model transferability, we design two complementary cross-dataset experiments following the protocol summarized in Table~\ref{tab:cross_protocol}.
+
+\begin{table}[t]
+  \caption{Cross-Dataset Experiment Protocol}
+  \label{tab:cross_protocol}
+  \centering
+  \small
+  \begin{tabular}{lll}
+    \toprule
+    Experiment & Seen (Training) & Unseen (Zero-Shot Test) \\
+    \midrule
+    A & NTHU-DDD, YawDD  & UTA-RLDD, NITYMED \\
+    B & UTA-RLDD, NITYMED & NTHU-DDD, YawDD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Each experiment trains the model from scratch on only the seen datasets using the identical architecture, loss function, and optimizer configuration as the full model, with a reduced early-stopping patience of 7 epochs. After training converges, the best checkpoint is evaluated on the test partitions of \emph{all four} datasets---both seen and unseen---to measure the generalization gap.
+
+\subsection{Experiment A: Train NTHU-DDD + YawDD, Test UTA-RLDD + NITYMED}
+\label{sec:expA}
+
+Table~\ref{tab:expA} reports Experiment~A results. The model achieves reasonable seen-dataset performance (NTHU-DDD: F1$=$0.638, AUC$=$0.720; YawDD: F1$=$0.404) but degenerates to near-chance on zero-shot UTA-RLDD (F1$=$0.481, AUC$\approx$0.500). This result demonstrates that a model trained on controlled laboratory and in-vehicle footage cannot generalize to UTA-RLDD's naturalistic webcam scenario.
+
+\begin{table}[t]
+  \caption{Experiment~A Results (Train: NTHU-DDD + YawDD)}
+  \label{tab:expA}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{llrrrrrr}
+    \toprule
+    Dataset & Tag & $N$ & Acc & Prec & Rec & F1 & AUC \\
+    \midrule
+    NTHU-DDD & Seen   & 13{,}287 & 0.757 & 0.778 & 0.630 & 0.638 & 0.720 \\
+    YawDD    & Seen   & 360      & 0.558 & 0.424 & 0.472 & 0.404 & 0.366 \\
+    UTA-RLDD & Unseen & 16{,}471 & 0.503 & 0.481 & 0.481 & 0.481 & 0.500 \\
+    NITYMED  & Unseen & 3{,}243  & 0.761 & 0.500 & 0.381 & 0.432 & N/A  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Training Dynamics}
+Fig.~\ref{fig:expA_training} shows Exp~A converges rapidly (best val-F1$=$0.797 at epoch~4, early stop at epoch~11). The smaller training set (12~hours vs.\ 46~hours for full model) and the val-F1~$=$~0.797 vs.\ test UTA-RLDD F1~$=$~0.481 discrepancy ($\Delta=0.316$) highlight how within-distribution validation overestimates out-of-distribution performance.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_A_loss_curve.png}
+    \caption{Train/Val Loss}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_A_val_f1_curve.png}
+    \caption{Validation F1}
+  \end{subfigure}
+  \caption{Experiment~A training curves over 11 epochs. (a)~Training loss decreases steadily but validation loss diverges after epoch~4, indicating overfitting to NTHU-DDD+YawDD characteristics. (b)~Validation F1 peaks at 0.797 at epoch~4 (best checkpoint).}
+  \label{fig:expA_training}
+\end{figure}
+
+\subsubsection{Confusion Matrices}
+Fig.~\ref{fig:expA_cm} shows the expected pattern: seen NTHU-DDD achieves meaningful (if imperfect) classification, while unseen UTA-RLDD confusion is nearly uniform across all four cells---the model cannot distinguish alert from drowsy for this out-of-distribution data.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_Exp_A_Nthu.png}
+    \caption{NTHU-DDD (Seen)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_A_yawdd.png}
+    \caption{YawDD (Seen)}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_A_uta.png}
+    \caption{UTA-RLDD (Unseen)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_A_nitymed.png}
+    \caption{NITYMED (Unseen)}
+  \end{subfigure}
+  \caption{Experiment~A confusion matrices. (a,b)~Seen datasets show meaningful classification patterns. (c)~Unseen UTA-RLDD exhibits near-random behavior. (d)~Unseen NITYMED shows most drowsy clips correctly detected.}
+  \label{fig:expA_cm}
+\end{figure}
+
+\subsubsection{ROC Curves}
+Fig.~\ref{fig:expA_roc} shows seen NTHU-DDD maintaining AUC$=$0.720 (comparable to the full model), while unseen UTA-RLDD collapses to AUC$\approx$0.500---the model's confidence scores carry no discriminative information for this out-of-distribution data.
+
+\subsection{Experiment B: Train UTA-RLDD + NITYMED, Test NTHU-DDD + YawDD}
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/exp_A_nthu_roc_curve.png}
+    \caption{NTHU-DDD (Seen, AUC$=$0.720)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/exp_A_uta_roc_curve.png}
+    \caption{UTA-RLDD (Unseen, AUC$\approx$0.500)}
+  \end{subfigure}
+  \caption{Experiment~A ROC curves for representative seen and unseen datasets. The seen NTHU-DDD maintains discriminative ability (AUC$=$0.720), while unseen UTA-RLDD collapses to chance level (AUC$\approx$0.500).}
+  \label{fig:expA_roc}
+\end{figure}
+
+The validation set, drawn from the same NTHU-DDD+YawDD distribution, provides an overly optimistic estimate of generalization: val-F1$=$0.797 at the best checkpoint while the unseen test F1 is only 0.481---a discrepancy of 0.316 that highlights the unreliability of within-distribution validation as a proxy for out-of-distribution performance.
+
+\subsection{Experiment B: Train UTA-RLDD + NITYMED, Test NTHU-DDD + YawDD}
+\label{sec:expB}
+
+Experiment~B (Table~\ref{tab:expB}) reveals the reverse asymmetry. The seen UTA-RLDD partition achieves F1$=$0.734 and AUC$=$0.836---the highest within-distribution performance of any experiment---but performance degrades substantially on unseen NTHU-DDD (F1$=$0.421, AUC$=$0.534). The F1 drop of 0.313 quantifies the substantial domain shift from UTA-RLDD's naturalistic webcam recordings to NTHU-DDD's controlled laboratory setup.
+
+\begin{table}[t]
+  \caption{Experiment~B Results (Train: UTA-RLDD + NITYMED)}
+  \label{tab:expB}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{llrrrrrr}
+    \toprule
+    Dataset & Tag & $N$ & Acc & Prec & Rec & F1 & AUC \\
+    \midrule
+    UTA-RLDD & Seen   & 16{,}471 & 0.775 & 0.819 & 0.725 & 0.734 & 0.836 \\
+    NITYMED  & Seen   & 3{,}243  & 0.996 & 0.500 & 0.498 & 0.499 & N/A  \\
+    NTHU-DDD & Unseen & 13{,}287 & 0.670 & 0.452 & 0.493 & 0.421 & 0.534 \\
+    YawDD    & Unseen & 360      & 0.547 & 0.291 & 0.452 & 0.354 & 0.117 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Training Dynamics}
+Fig.~\ref{fig:expB_training} shows Exp~B: training loss reaches 0.014 by epoch~3 while validation loss fluctuates between 1.37 and 2.85---a more extreme divergence than the full model or Exp~A, indicating strong overfitting to UTA-RLDD recording characteristics. Best checkpoint: epoch~6 (val-F1$=$0.749).
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_B_loss_curve.png}
+    \caption{Train/Val Loss}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_B_val_f1_curve.png}
+    \caption{Validation F1}
+  \end{subfigure}
+  \caption{Experiment~B training curves over 13 epochs. (a)~Training loss drops to near-zero within 3 epochs, but validation loss oscillates erratically---indicating severe overfitting. (b)~Validation F1 peaks at 0.749 at epoch~6 before degrading.}
+  \label{fig:expB_training}
+\end{figure}
+
+\subsubsection{Confusion Matrices}
+Fig.~\ref{fig:expB_cm}: seen UTA-RLDD shows strong diagonal dominance; unseen NTHU-DDD exhibits alert-class bias (near-zero drowsy recall), indicating UTA-RLDD-specific drowsy cues that do not transfer to NTHU-DDD's controlled setting.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_B_uta.png}
+    \caption{UTA-RLDD (Seen)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_B_nthu.png}
+    \caption{NTHU-DDD (Unseen)}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_B_yawdd.png}
+    \caption{YawDD (Unseen)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/confusion_matrix_exp_B_nitymed.png}
+    \caption{NITYMED (Seen)}
+  \end{subfigure}
+  \caption{Experiment~B confusion matrices. (a)~Seen UTA-RLDD shows strong diagonal dominance. (b)~Unseen NTHU-DDD exhibits alert-class bias. (c)~Unseen YawDD shows poor separation. (d)~Seen NITYMED trivially classifies all as drowsy.}
+  \label{fig:expB_cm}
+\end{figure}
+
+\subsubsection{ROC Curves}
+Fig.~\ref{fig:expB_roc}: seen UTA-RLDD achieves the highest AUC (0.836) across all experiments; unseen NTHU-DDD (AUC$=$0.534) barely exceeds the diagonal.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/exp_B_uta_roc_curve.png}
+    \caption{UTA-RLDD (Seen, AUC$=$0.836)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\columnwidth}
+    \includegraphics[width=\textwidth]{Images/exp_B_nthu_roc_curve.png}
+    \caption{NTHU-DDD (Unseen, AUC$=$0.534)}
+  \end{subfigure}
+  \caption{Experiment~B ROC curves. The seen UTA-RLDD achieves the highest AUC (0.836) across all experiments, while unseen NTHU-DDD barely exceeds chance.}
+  \label{fig:expB_roc}
+\end{figure}
+
+\subsection{Cross-Experiment Comparison}
+\label{sec:cross_comparison}
+
+Fig.~\ref{fig:crosseval} presents the seen-vs-unseen comparison charts for both experiments. Several patterns emerge:
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_A_seen_vs_unseen.png}
+    \caption{Experiment A (Train: NTHU-DDD + YawDD)}
+    \label{fig:crossA}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{Images/exp_B_seen_vs_unseen.png}
+    \caption{Experiment B (Train: UTA-RLDD + NITYMED)}
+    \label{fig:crossB}
+  \end{subfigure}
+  \caption{Seen vs.\ Unseen generalization comparison for both cross-dataset experiments. Blue bars: seen (training) datasets; orange bars: unseen (zero-shot) datasets.}
+  \label{fig:crosseval}
+\end{figure}
+
+\textbf{Asymmetric transfer.} NTHU-DDD+YawDD$\rightarrow$UTA-RLDD (Exp~A) yields near-chance F1, while the reverse (Exp~B) is degraded but above chance. UTA-RLDD's wider feature distribution partially overlaps NTHU-DDD's more restricted domain, but not vice versa.
+
+\textbf{Dataset size matters.} Exp~B's seen-partition F1 (0.734) exceeds Exp~A's (0.638) with the same architecture: UTA-RLDD provides 30~hours vs.\ NTHU-DDD's 9.5~h and YawDD's 2.6~h combined.
+
+\textbf{YawDD as a persistent challenge.} YawDD yields F1$<$0.41 across all conditions (full: 0.377; Exp~A seen: 0.404; Exp~B unseen: 0.354), reflecting extreme class imbalance, dual camera geometry, and short yawn events.
+
+\textbf{Joint training superiority.} The full multi-dataset model achieves the best macro-avg F1 (0.551 vs.\ 0.489/0.502), confirming that joint training maximizes within-distribution performance.
+
+\subsection{Consolidated Performance Comparison}
+\label{sec:consolidated}
+Table~\ref{tab:consolidated} summarizes macro-F1 across all three training configurations, confirming joint training yields the best overall performance.
+
+\begin{table}[t]
+  \caption{Consolidated F1 Comparison Across Training Configurations}
+  \label{tab:consolidated}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{lccc}
+    \toprule
+    Dataset & Full Model & Exp~A & Exp~B \\
+    \midrule
+    NTHU-DDD & 0.665 & 0.638 (Seen) & 0.421 (Unseen) \\
+    YawDD    & 0.377 & 0.404 (Seen) & 0.354 (Unseen) \\
+    UTA-RLDD & 0.662 & 0.481 (Unseen) & 0.734 (Seen) \\
+    NITYMED  & 0.500 & 0.432 (Unseen) & 0.499 (Seen) \\
+    \midrule
+    \textbf{Macro-Avg} & \textbf{0.551} & 0.489 & 0.502 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+As shown in Table~\ref{tab:consolidated}, the full model achieves the best macro-average F1 (0.551), confirming joint training superiority. Each dataset is best served when it is part of the training set.
+
+\subsection{Generalization Heatmap}
+\label{sec:gen_heatmap}
+Fig.~\ref{fig:comparison_plots} shows side-by-side F1 bars and a generalization heatmap. The block-diagonal warm-color pattern confirms that models perform best on their training distributions; the Full Model row shows the warmest average coloring across all datasets.
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=0.95\textwidth]{Images/comparison_bar.png}
+    \caption{Side-by-side F1 comparison across training configurations}
+    \label{fig:comparison_bar}
+  \end{subfigure}
+  \\[6pt]
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=0.95\textwidth]{Images/generalization_heatmap.png}
+    \caption{Generalization heatmap: rows are training configurations, columns are test datasets}
+    \label{fig:gen_heatmap_fig}
+  \end{subfigure}
+  \caption{Cross-configuration comparison visualizations. (a)~The bar chart highlights that joint training (Full Model) provides the most consistent performance across all datasets. (b)~The heatmap reveals the block-diagonal pattern expected from domain shift: models perform best on their training data distribution.}
+  \label{fig:comparison_plots}
+\end{figure}
+
+
+
+\subsection{Domain Shift Analysis}
+\label{sec:shift_analysis}
+
+The generalization gap stems from five key factors: (1)~\textbf{camera geometry and resolution}---fixed front-facing (NTHU-DDD) vs.\ dual-mount (YawDD) vs.\ laptop webcams (UTA-RLDD); (2)~\textbf{illumination}---NTHU-DDD varies daylight/nighttime/IR, UTA-RLDD uses ambient office light; (3)~\textbf{occlusion}---NTHU-DDD's structured glasses conditions are absent in UTA-RLDD; (4)~\textbf{annotation granularity}---different per-dataset label spaces collapsed to binary introduce class-boundary inconsistencies; and (5)~\textbf{subject demographics}---varying facial morphologies and drowsiness manifestation styles.
+
+\subsection{Quantitative Domain Shift Metrics}
+\label{sec:shift_quantitative}
+Table~\ref{tab:shift_metrics} reports F1 degradation ratios $\Delta = 1 - (\text{F1}_{\text{unseen}} / \text{F1}_{\text{seen}})$. Exp~B suffers nearly twice the relative degradation (42.6\%) compared to Exp~A (24.6\%), indicating that UTA-RLDD→NTHU-DDD transfer is harder than the reverse direction. NTHU-DDD's structured glasses/nighttime conditions and UTA-RLDD's ambiguous low-vigilance boundary (mapped to drowsy) both contribute to this asymmetry.
+
+\begin{table}[t]
+  \caption{Domain Shift Impact: F1 Degradation from Seen to Unseen Partitions}
+  \label{tab:shift_metrics}
+  \centering
+  \small
+  \begin{tabular}{lcccc}
+    \toprule
+    Experiment & Seen F1 & Unseen F1 & $\Delta$ & Interpretation \\
+    \midrule
+    Exp~A & 0.638 & 0.481 & 24.6\% & Moderate shift \\
+    Exp~B & 0.734 & 0.421 & 42.6\% & Severe shift \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+
+
+% =============================================================
+\section{Grad-CAM Interpretability Analysis}
+\label{sec:gradcam}
+
+To verify that the model's predictions are based on physiologically meaningful facial regions rather than spurious background correlations or dataset-specific artifacts, we apply Gradient-weighted Class Activation Mapping (Grad-CAM)~\cite{selvaraju2017} to the output of the final convolutional block (\texttt{backbone.block4}).
+
+\subsection{Grad-CAM Methodology}
+\label{sec:gradcam_method}
+
+Forward and backward hooks are registered on the Block~4 module to capture the activation tensor $\mathbf{A} \in \mathbb{R}^{128 \times 2 \times 7 \times 7}$ and the gradient tensor $\frac{\partial y_c}{\partial \mathbf{A}}$ for the predicted class $c$. The class-discriminative activation map is computed as:
+\begin{equation}
+\text{CAM}_c = \text{ReLU}\!\left(\sum_{k=1}^{128} \alpha_k^c \, \mathbf{A}_k\right),
+\end{equation}
+where the channel importance weights are obtained by global average pooling the gradients over all spatiotemporal dimensions:
+\begin{equation}
+\alpha_k^c = \frac{1}{T' \cdot H' \cdot W'} \sum_{t,h,w} \frac{\partial y_c}{\partial \mathbf{A}_{k,t,h,w}}.
+\end{equation}
+The $(2\times7\times7)$ activation map is trilinearly upsampled to $(16\times112\times112)$ and normalized to $[0,1]$, then blended as a JET-colormap overlay (35\% opacity) on the face-crop frames. The model is switched to training mode (required by cuDNN's LSTM backward pass) but all Dropout rates are zeroed to eliminate stochasticity.
+
+\subsection{Grad-CAM Results: Correct Predictions}
+\label{sec:gradcam_results}
+
+We categorize Grad-CAM outputs into four prediction categories to reveal how attention differs between correct and incorrect predictions.
+
+\subsubsection{Correct Drowsy Predictions (True Positives)}
+Fig.~\ref{fig:gradcam_cd} (NTHU-DDD, subject~009, glasses, slow blink with nodding) shows periocular attention concentrated on the eyes and upper eyelids throughout all 16 frames. In early frames activation spreads across the upper face; it sharpens around closing eyelids as the blink/nod evolves---demonstrating that 3D convolutions track the \textit{dynamics} of eye closure rather than static closed-eye appearance.
+
+\subsubsection{Correct Alert Predictions (True Negatives)}
+Fig.~\ref{fig:gradcam_ca} shows alert-class activation diffused broadly across the face with moderate intensity around eyes and lower face, consistent with classification relying on the \textit{absence} of localized drowsy cues.
+
+\begin{figure*}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=0.85\textwidth]{Images/gradcam_grid_CD.png}
+    \caption{Correct drowsy prediction (NTHU-DDD, subject~009, glasses, slow blink with nodding). Activation concentrates on the periocular region.}
+    \label{fig:gradcam_cd}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=0.85\textwidth]{Images/gradcam_grid_CA.png}
+    \caption{Correct alert prediction (NTHU-DDD, subject~009, no glasses). Activation is more diffusely distributed.}
+    \label{fig:gradcam_ca}
+  \end{subfigure}
+  \caption{Grad-CAM for correct predictions shown side by side: (a) correct drowsy and (b) correct alert.}
+\end{figure*}
+
+\subsubsection{Correct Alert Predictions (True Negatives)}
+Fig.~\ref{fig:gradcam_ca} shows alert-class activation diffused broadly across the face with moderate intensity around eyes and lower face, consistent with classification relying on the \textit{absence} of localized drowsy cues.
+
+\subsection{Grad-CAM Results: Failure Cases}
+\label{sec:gradcam_failures}
+
+\subsubsection{False Negatives (Drowsy Predicted as Alert)}
+Fig.~\ref{fig:gradcam_fn} (NTHU-DDD, subject~009, glasses, sleepy combination): activation is \textit{fragmented} across the whole face without spatial coherence. Glasses occlusion prevents the model from focusing on the eye region, causing it to fall back on a less discriminative whole-face representation and default to the alert class.
+
+\subsubsection{False Positives (Alert Predicted as Drowsy)}
+Fig.~\ref{fig:gradcam_fp}: inappropriate attention on the \textbf{lower face and mouth region} suggests the model confused normal oral movements (speech, swallowing) with yawning.
+
+\begin{figure*}[t]
+  \centering
+  \begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=0.85\textwidth]{Images/gradcam_grid_FN.png}
+    \caption{False negative (drowsy predicted as alert). Subject~009 with glasses; activation is fragmented and lacks coherent periocular focus.}
+    \label{fig:gradcam_fn}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=0.85\textwidth]{Images/gradcam_grid_FP.png}
+    \caption{False positive (alert predicted as drowsy). Subject~001; activation focuses on the mouth region.}
+    \label{fig:gradcam_fp}
+  \end{subfigure}
+  \caption{Grad-CAM failure cases shown side by side: (a) false negative and (b) false positive predictions.}
+\end{figure*}
+
+\subsubsection{False Positives (Alert Predicted as Drowsy)}
+Fig.~\ref{fig:gradcam_fp}: inappropriate attention on the \textbf{lower face and mouth region} suggests the model confused normal oral movements (speech, swallowing) with yawning.
+
+\subsection{Cross-Dataset Grad-CAM: Seen vs.\ Unseen Attention}
+\label{sec:gradcam_cross}
+Fig.~\ref{fig:gradcam_cross} compares Grad-CAM outputs from the Exp~A model on seen NTHU-DDD vs.\ unseen UTA-RLDD data. Within-distribution (NTHU-DDD), the model produces coherent periocular attention, consistent with the full model. On out-of-distribution UTA-RLDD, attention is broader and less spatially precise---visually confirming the domain shift that drives lower quantitative performance (Section~\ref{sec:cross}).
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=0.5\textwidth]{Images/exp_A_gradcam_grid_CD.png}
+
+    \caption{Exp~A on Seen NTHU-DDD (Correct Drowsy)}
+  \end{subfigure}
+  \\[4pt]
+  \begin{subfigure}[b]{\columnwidth}
+    \centering
+    \includegraphics[width=0.5\textwidth]{Images/exp_A_gradcam_grid_CA_unseen.png}
+    \caption{Exp~A on Unseen UTA-RLDD (Correct Alert)}
+  \end{subfigure}
+  \caption{Cross-dataset Grad-CAM comparison using the Experiment~A model. (a)~On seen NTHU-DDD data, the model produces coherent periocular focus for drowsy predictions. (b)~On unseen UTA-RLDD data, attention is broader and less spatially precise, reflecting uncertainty in an unfamiliar visual domain.}
+  \label{fig:gradcam_cross}
+\end{figure}
+
+
+
+\subsection{Summary of Interpretability Findings}
+\label{sec:gradcam_summary}
+Grad-CAM analysis confirms: (1)~attention focuses on physiologically relevant periocular and oral regions; (2)~temporal heatmap consistency across frames demonstrates spatiotemporal, not single-frame, localization; (3)~minimal background or hair activation provides evidence against shortcut learning; (4)~false negatives show fragmented attention (glasses occlusion); (5)~false positives show inappropriate oral attention (speech--yawn confusion); and (6)~out-of-distribution data produces broader, less precise attention than in-distribution data.
+
+% =============================================================
+\section{Real-Time Webcam Inference System}
+\label{sec:realtime}
+
+A complete real-time inference pipeline is implemented and demonstrated, achieving live drowsiness detection at video frame rates on consumer GPU hardware. Algorithm~\ref{alg:inference} provides the formal description of the real-time processing loop.
+
+\begin{algorithm}[t]
+\caption{Real-Time Drowsiness Detection Pipeline}
+\label{alg:inference}
+\begin{algorithmic}[1]
+\REQUIRE Trained model $f_{\theta^*}$, webcam, threshold $\tau{=}0.5$, stride $s{=}2$
+\STATE Initialize face detector (InsightFace RetinaFace)
+\STATE Initialize landmark extractor (MediaPipe FaceMesh)
+\STATE Initialize rolling buffers: $\mathcal{B}_{\text{vid}} \leftarrow \text{deque}(T)$, $\mathcal{B}_{\text{lm}} \leftarrow \text{deque}(T)$
+\STATE $t \leftarrow 0$; $\text{label} \leftarrow \text{``Alert''}$
+\WHILE{webcam is active}
+  \STATE frame $\leftarrow$ capture()
+  \STATE face $\leftarrow$ detect\_face(frame)
+  \STATE face\_crop $\leftarrow$ crop\_resize(face, $112{\times}112$)
+  \STATE landmarks $\leftarrow$ extract\_landmarks(face\_crop)
+  \STATE EAR, MOR $\leftarrow$ compute\_ratios(landmarks)
+  \STATE Push face\_crop to $\mathcal{B}_{\text{vid}}$; push [EAR, MOR] to $\mathcal{B}_{\text{lm}}$
+  \IF{$t \bmod s = 0$ \AND $|\mathcal{B}_{\text{vid}}| = T$}
+    \STATE $\mathbf{X} \leftarrow \text{stack}(\mathcal{B}_{\text{vid}}) \in \mathbb{R}^{1 \times 3 \times T \times 112 \times 112}$
+    \STATE $\mathbf{L} \leftarrow \text{stack}(\mathcal{B}_{\text{lm}}) \in \mathbb{R}^{1 \times T \times 2}$
+    \STATE $p_{\text{drowsy}} \leftarrow \text{softmax}(f_{\theta^*}(\mathbf{X}, \mathbf{L}))[1]$
+    \STATE label $\leftarrow$ \textbf{if} $p_{\text{drowsy}} > \tau$ \textbf{then} ``Drowsy'' \textbf{else} ``Alert''
+  \ENDIF
+  \STATE render\_HUD(frame, label, $p_{\text{drowsy}}$, EAR, MOR, FPS)
+  \STATE $t \leftarrow t + 1$
+\ENDWHILE
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Pipeline Architecture}
+\label{sec:rt_pipeline}
+The pipeline executes a per-frame loop with seven stages: (1)~\textbf{Frame capture} via OpenCV at 1080p/30~FPS; (2)~\textbf{Face detection} via InsightFace RetinaFace \texttt{buffalo\_sc} (CUDA ONNX, $320\times320$, with center-crop fallback if no face found); (3)~\textbf{Face preprocessing}: crop and resize to $112\times112$; (4)~\textbf{Landmark extraction} via MediaPipe FaceMesh (video mode, 478 landmarks), computing EAR and MOR; (5)~\textbf{Rolling buffer}: circular deques of length $T{=}16$ for frames and $[\text{EAR},\text{MOR}]$; (6)~\textbf{Model inference} every $s{=}2$ frames: stack buffers into clip tensor $(1,3,16,112,112)$ and landmark tensor $(1,16,2)$, run forward pass, apply threshold $\tau{=}0.5$; (7)~\textbf{HUD rendering}: alert/drowsy label with color-coded bounding box, drowsy probability, live EAR, MOR, and FPS.
+
+\subsection{Performance Benchmarks}
+\label{sec:rt_performance}
+Table~\ref{tab:rt_perf} reports performance on the test hardware (RTX~3050, 4~GB VRAM, CUDA~12.1). The pipeline sustains 25--30~FPS, with the model contributing $\sim$35~ms per call. At stride $s{=}2$, predictions arrive at 12--15/sec with $<$100~ms end-to-end latency---sufficient for timely ADAS alerting.
+
+\begin{table}[t]
+  \caption{Real-Time Pipeline Performance (RTX 3050, 1080p Capture)}
+  \label{tab:rt_perf}
+  \centering
+  \begin{tabular}{ll}
+    \toprule
+    Metric & Value \\
+    \midrule
+    Capture resolution       & 1920$\times$1080 \\
+    Overall pipeline FPS     & 25--30 FPS \\
+    Model inference latency  & $\sim$35 ms/call \\
+    Face detection latency   & $\sim$8 ms/frame \\
+    Landmark extraction      & $\sim$4 ms/frame \\
+    Inference stride ($s$)   & 2 frames \\
+    Effective prediction rate & 12--15 predictions/sec \\
+    End-to-end latency       & $<$100 ms \\
+    GPU memory usage         & $\sim$1.2 GB \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The pipeline sustains 25--30~FPS with $<$100~ms end-to-end latency and 12--15 drowsiness predictions/sec---well above the 10/sec threshold for timely ADAS alerting.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{Images/webcam_demo.png}
+  \caption{Real-time drowsiness detection demo screenshot. The HUD displays the current prediction label with color-coded bounding box, drowsy probability, live EAR and MOR values, and inference frame rate.}
+  \label{fig:webcam}
+\end{figure}
+
+% =============================================================
+\section{Comparison with Existing Methods}
+\label{sec:comparison}
+
+Table~\ref{tab:sota} contextualizes our results against published methods on NTHU-DDD and UTA-RLDD. Direct comparison is complicated by differing preprocessing pipelines, evaluation protocols, and splits; numbers are taken directly from publications.
+
+\begin{table}[t]
+  \caption{Comparison with Published Methods on NTHU-DDD and UTA-RLDD}
+  \label{tab:sota}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{lllll}
+    \toprule
+    Method & Input & Dataset & Acc & F1/AUC \\
+    \midrule
+    EAR threshold~\cite{soukupova2016}     & Landmarks & NTHU-DDD & $\sim$72\% & --- \\
+    EAR+MOR rules~\cite{raza2021}          & Landmarks & NTHU-DDD & 77.2\%     & --- \\
+    2D-CNN + vote~\cite{weng2016}          & Frames    & NTHU-DDD & $\sim$73\% & --- \\
+    C3D features~\cite{tran2015}           & Video     & NTHU-DDD & $\sim$75\% & --- \\
+    CNN + LSTM~\cite{massoz2018}           & Frames    & UTA-RLDD & 74.0\%     & --- \\
+    \midrule
+    \textbf{Ours (full model)}             & Video+LM  & NTHU-DDD & 74.1\% & 0.665 / 0.715 \\
+    \textbf{Ours (full model)}             & Video+LM  & UTA-RLDD & 73.7\% & 0.662 / 0.801 \\
+    \textbf{Ours (Exp~B seen)}             & Video+LM  & UTA-RLDD & 77.5\% & 0.734 / 0.836 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Our full model simultaneously trains on all four datasets and operates in real-time, obtaining competitive accuracy. Exp~B on UTA-RLDD (F1$=$0.734, AUC$=$0.836) surpasses the CNN+LSTM baseline~\cite{massoz2018} on the same dataset (different splits prevent strict comparison). To our knowledge, this is the first work providing both multi-dataset training and systematic cross-dataset generalization analysis in a unified framework.
+
+Table~\ref{tab:method_comparison} provides a qualitative comparison of key methodological dimensions. As shown, no prior method simultaneously addresses temporal modelling via joint 3D convolution and recurrence, multi-dataset training, cross-dataset evaluation, learned landmark fusion, Grad-CAM interpretability, and a real-time demonstration---our framework integrates all six.
+
+\begin{table*}[t]
+  \caption{Detailed Qualitative Comparison of Key Methodological Dimensions}
+  \label{tab:method_comparison}
+  \centering
+  \small
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{lcccccc}
+    \toprule
+    Method & Temporal & Multi-Dataset & Cross-Dataset & Landmark & Interpretability & Real-Time \\
+           & Modelling & Training & Evaluation & Fusion & (Grad-CAM) & Demo \\
+    \midrule
+    EAR threshold~\cite{soukupova2016} & None & \ding{55} & \ding{55} & Fixed threshold & \ding{55} & \ding{51} \\
+    EAR+MOR rules~\cite{raza2021} & None & \ding{55} & \ding{55} & Fixed threshold & \ding{55} & \ding{51} \\
+    2D-CNN + vote~\cite{weng2016} & Voting & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} \\
+    CNN + LSTM~\cite{massoz2018} & LSTM & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} \\
+    3D-CNN (C3D)~\cite{tran2015} & 3D Conv & \ding{55} & \ding{55} & \ding{55} & \ding{55} & \ding{55} \\
+    \midrule
+    \textbf{Ours} & 3D-CNN+LSTM & \ding{51} & \ding{51} & Learned LSTM & \ding{51} & \ding{51} \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+As shown in Table~\ref{tab:method_comparison}, our framework is the first to integrate all six dimensions.
+
+% =============================================================
+\section{Ablation Study}
+\label{sec:ablation}
+
+\subsection{Effect of Landmark Fusion}
+\label{sec:ablation_lm}
+The parallel landmark LSTM adds only 17,152 parameters (0.2\%) but provides two benefits: (i)~geometric EAR/MOR features are invariant to illumination, skin tone, and texture---maintaining discriminative power when video contrast is low; (ii)~at full 16-frame resolution, the branch captures blink-level dynamics (150--400~ms duration, 2--6 frames) that the 2-timestep compressed video pathway cannot represent. Grad-CAM evidence (Section~\ref{sec:gradcam}) suggests the branch contributes even when spatial attention is suboptimal.
+
+\subsection{Effect of Multi-Dataset Training}
+\label{sec:ablation_multi}
+Section~\ref{sec:cross} provides a natural ablation: the full model (all 4 datasets, macro-F1$=$0.551) outperforms Exp~A (0.489) and Exp~B (0.502), confirming diversity benefits. However, Exp~B specialized on UTA-RLDD (F1$=$0.734) outperforms the full model on that dataset (0.662), illustrating a specialization--generalization trade-off.
+
+\subsection{Effect of Temporal Pooling and Mixed Precision}
+\label{sec:ablation_pool}
+Asymmetric pooling (stride $(1,2,2)$ in Block~1, $(2,2,2)$ in Blocks~2--4) preserves fine-grained blink dynamics in early layers while compressing to an efficient $T'{=}2$ representation. A symmetric alternative would eliminate temporal depth entirely before the LSTM. Mixed-precision training (\texttt{torch.cuda.amp}) is a practical necessity on the RTX~3050 (4~GB VRAM): halving memory doubles the feasible batch size from~16 to~32, improving gradient estimates without significantly altering convergence.
+
+
+
+% =============================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Strengths of the Proposed Approach}
+
+\textbf{End-to-end spatiotemporal learning.} Our 3D-CNN backbone jointly learns spatiotemporal representations from raw face-crop clips, capturing motion patterns (gradual blink, head tilt) that frame-level features cannot. Grad-CAM (Section~\ref{sec:gradcam}) confirms these features correspond to physiologically meaningful facial dynamics.
+
+\textbf{Multi-modal landmark fusion.} The geometric EAR/MOR signal is robust to illumination, glasses, and skin-tone variations, providing a complementary pathway at full 16-frame resolution where the 2-step video branch compresses fine-grained blink dynamics away.
+
+\textbf{Comprehensive evaluation.} Four-dataset evaluation and two cross-dataset experiments provide a far broader picture than standard single-dataset studies, establishing quantitative domain-shift baselines for future work.
+
+\textbf{Practical deployability.} At 8.7M parameters, $\sim$35~ms inference, $\geq$25~FPS at 1080p, and 1.2~GB GPU memory on a consumer RTX~3050, the model is fit for ADAS integration.
+
+\subsection{Limitations and Failure Modes}
+\label{sec:limitations}
+
+\textbf{Cross-dataset generalization.} Near-chance F1 ($\approx$0.48) when transferring across recording domains indicates the model overfits dataset-specific characteristics rather than generic drowsiness cues.
+
+\textbf{YawDD performance.} F1$<$0.41 across all settings reflects extreme class imbalance, dual camera geometry, and short sporadic yawning events that are inherently hard to classify.
+
+\textbf{Single-class datasets.} NITYMED's lack of alert samples makes its test-set metrics uninformative ($\text{F1}{=}0.5$ by construction).
+
+\textbf{Temporal compression.} Aggressive pooling (16$\rightarrow$2 timesteps) limits fine-grained temporal resolution in the video branch to $\sim$0.5~s, partially offset by the landmark branch.
+
+\textbf{Binary classification granularity.} All drowsiness severities are collapsed into one class; a graded scale (e.g., KSS~\cite{kaida2006}) would be more informative but requires appropriately labelled data across all four datasets.
+
+\subsection{Implications for Deployment}
+\label{sec:implications}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Distribution matching is critical}: Without domain adaptation, systems trained on one scenario fail in significantly different real-world environments.
+  \item \textbf{Training diversity is the primary lever}: Joint multi-dataset training outperforms single-source training without explicit adaptation techniques.
+  \item \textbf{Within-distribution validation can mislead}: Exp~A's val-F1$=$0.797 vs.\ unseen F1$=$0.481 illustrates the risk of using only within-distribution metrics for deployment decisions.
+  \item \textbf{Grad-CAM verification is essential}: Confirming attention focuses on physiologically relevant regions is necessary for safety-critical deployment.
+\end{itemize}
+
+\subsection{Computational Considerations}
+\label{sec:compute}
+Table~\ref{tab:compute} summarizes training resources. All experiments ran on a single RTX~3050 (4~GB VRAM), confirming that competitive drowsiness detection research is feasible without high-end compute. Preprocessing (frame extraction, face crop, landmark extraction, clip building) is a one-time cost of 24--48~hours.
+
+\begin{table}[t]
+  \caption{Computational Resource Summary}
+  \label{tab:compute}
+  \centering
+  \small
+  \begin{tabular}{lcc}
+    \toprule
+    Configuration & Training Time & Epochs (Best/Total) \\
+    \midrule
+    Full Model    & $\sim$8--10 hrs & 12 / 24 \\
+    Experiment~A  & $\sim$3--4 hrs  & 4 / 11 \\
+    Experiment~B  & $\sim$4--5 hrs  & 6 / 13 \\
+    \midrule
+    Preprocessing & $\sim$24--48 hrs (one-time) & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Error Taxonomy}
+\label{sec:error_taxonomy}
+Five failure modes emerge from the confusion matrix, Grad-CAM, and cross-dataset analyses: (1)~\textbf{Occlusion false negatives}---glasses obscure the eye region, fragmenting Grad-CAM attention and defaulting to alert; (2)~\textbf{Speech false positives}---oral movements during talking are confused with yawning; (3)~\textbf{Low-vigilance ambiguity}---UTA-RLDD's borderline low-vigilance class introduces label noise when merged into drowsy; (4)~\textbf{Domain-shift misclassification}---out-of-distribution inputs produce uncalibrated confidence; (5)~\textbf{Imbalance default}---on YawDD, the model predicts majority class (alert) almost exclusively.
+
+% =============================================================
+\section{Future Work}
+\label{sec:future}
+
+Our results motivate several research directions: (1)~\textbf{Domain adaptation}---domain-adversarial training (DANN)~\cite{ganin2016} or MMD regularization to close the generalization gap quantified by Fig.~\ref{fig:gen_heatmap_fig}; (2)~\textbf{Pre-trained backbones}---replacing the custom 3D-CNN with a Kinetics-pretrained Video Transformer (TimeSformer~\cite{bertasius2021}, VideoMAE~\cite{tong2022}) for richer features and built-in interpretability; (3)~\textbf{Multi-resolution video pathways}---extending the dual-temporal-resolution design (already applied to landmarks) to the video branch, inspired by SlowFast~\cite{feichtenhofer2019}; (4)~\textbf{Longer temporal context}---multi-clip architectures carrying LSTM state across consecutive clips to detect gradual fatigue onset; (5)~\textbf{Privacy-preserving landmark-only inference}---the landmark LSTM branch as a GDPR-compliant standalone system; and (6)~\textbf{Calibrated confidence estimation}---temperature scaling or ensemble methods to flag out-of-distribution inputs.
+
+% =============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a multi-dataset driver drowsiness detection framework combining a 3D-CNN spatiotemporal backbone, LSTM temporal modelling, and a parallel EAR/MOR landmark LSTM branch into a compact, end-to-end trainable model (8.7M parameters). Evaluated across four public benchmarks with strict subject-wise splits, the framework achieves macro-F1 of 0.665/0.662 and AUC of 0.715/0.801 on NTHU-DDD/UTA-RLDD. Joint multi-dataset training yields the best macro-average F1 (0.551), outperforming single-pair configurations. Cross-dataset experiments quantify the generalization gap (24--43\% F1 degradation), and Grad-CAM analysis confirms that predictions rely on physiologically meaningful periocular and oral attention. The real-time pipeline achieves $\geq$25~FPS at 1080p with $<$100~ms latency on a consumer GPU. The primary limitation is cross-dataset generalization, which domain adaptation and larger pre-trained backbones remain open avenues to address.
+\bibliographystyle{IEEEtran}
+
+\bibliography{references1}
+
+
+
+\end{document}

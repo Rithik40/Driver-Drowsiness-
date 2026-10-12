@@ -1,0 +1,12 @@
+insightface
+matplotlib
+mediapipe
+numpy
+opencv-python
+Pillow
+PyYAML
+scikit-learn
+tensorboard
+torch
+torchvision
+tqdm
